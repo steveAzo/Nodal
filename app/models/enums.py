@@ -44,3 +44,28 @@ class ConsentStatus(str, enum.Enum):
     active = "active"
     expired = "expired"
     revoked = "revoked"
+
+
+class EventType(str, enum.Enum):
+    transaction = "transaction"
+    balance_snapshot = "balance_snapshot"
+    document = "document"
+
+
+class Direction(str, enum.Enum):
+    in_ = "in"
+    out = "out"
+
+
+class BusinessActivityLabel(str, enum.Enum):
+    weak = "weak"
+    moderate = "moderate"
+    strong = "strong"
+
+
+class RiskLabel(str, enum.Enum):
+    """Shared low/medium/high band, reused for fraud_risk and risk_tier."""
+
+    low = "low"
+    medium = "medium"
+    high = "high"

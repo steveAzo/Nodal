@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -7,6 +8,19 @@ from app.models.profile import Profile, Source
 from app.schemas.profile import OnboardingRequest, ProfileOut
 
 router = APIRouter(tags=["onboarding"])
+
+
+@router.get("/profiles", response_model=list[ProfileOut])
+def list_profiles(
+    node_type: NodeType | None = None,
+    limit: int = Query(default=50, le=200),
+    db: Session = Depends(get_db),
+) -> list[ProfileOut]:
+    stmt = select(Profile).order_by(Profile.created_at.desc()).limit(limit)
+    if node_type is not None:
+        stmt = stmt.where(Profile.node_type == node_type)
+    profiles = db.scalars(stmt).all()
+    return [ProfileOut.from_model(p) for p in profiles]
 
 
 @router.post(

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
@@ -7,6 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.models.enums import ConsentStatus, SourceType
+
+if TYPE_CHECKING:
+    from app.models.profile import Profile, Source
 
 
 def _utcnow() -> datetime:
@@ -34,5 +38,5 @@ class Consent(Base):
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    profile: Mapped["Profile"] = relationship(back_populates="consents")  # noqa: F821
-    sources: Mapped[list["Source"]] = relationship(back_populates="consent")  # noqa: F821
+    profile: Mapped["Profile"] = relationship(back_populates="consents")
+    sources: Mapped[list["Source"]] = relationship(back_populates="consent")

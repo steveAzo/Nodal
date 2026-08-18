@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_url: str
     consent_default_expiry_days: int = 90
+    tesseract_cmd: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

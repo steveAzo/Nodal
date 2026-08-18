@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -13,6 +14,9 @@ from app.models.enums import (
     OnboardingChannel,
     SourceType,
 )
+
+if TYPE_CHECKING:
+    from app.models.consent import Consent
 
 
 def _utcnow() -> datetime:
