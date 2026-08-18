@@ -36,6 +36,7 @@ class Passport(Base):
     repayment_reliability_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
     fraud_risk: Mapped[str] = mapped_column(String(10), nullable=False)
     nodal_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(10), nullable=False)
 
     confidence_identity: Mapped[int] = mapped_column(nullable=False)
     confidence_cash_flow: Mapped[int] = mapped_column(nullable=False)

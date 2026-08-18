@@ -21,7 +21,10 @@ _DESCRIPTIONS: dict[str, str] = {
     "EventType": "Kind of event landing through the ingestion pipeline.",
     "Direction": "Cash-flow direction of a transaction event.",
     "BusinessActivityLabel": "Categorical read of the Business Activity sub-score.",
-    "RiskLabel": "Shared low/medium/high band, used for both fraud_risk and internal risk-tier banding.",
+    "RiskLabel": "Shared low/medium/high band, used for both fraud_risk and risk_tier.",
+    "RecommendationType": "Outcome of a Decision: approve, decline (active fraud signal), or refer (needs human review).",
+    "LedgerEntryType": "Whether a LedgerEntry is a disbursement or a repayment.",
+    "SettlementRail": "Settlement rail for a disbursement. Domestic is the only value this build's settlement endpoint can produce.",
 }
 
 # Not a Python enum (it's a plain 0-4 int column), but frontend needs the

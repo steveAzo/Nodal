@@ -14,8 +14,9 @@ from statistics import mean, pstdev
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.enums import BusinessActivityLabel, RiskLabel, SourceType
+from app.models.enums import BusinessActivityLabel, LedgerEntryType, RiskLabel, SourceType
 from app.models.ingestion_event import IngestionEvent
+from app.models.ledger import LedgerEntry
 from app.models.profile import Profile, Source
 
 WINDOW_DAYS = 90
@@ -62,6 +63,7 @@ class ScoringResult:
     repayment_reliability_score: float
     fraud_risk_label: RiskLabel
     nodal_score: float
+    risk_tier: RiskLabel
     confidence: dict[str, int]
     recommended_liquidity_line_ghs: float
     recommended_duration_hours: int
@@ -187,7 +189,10 @@ def _recommended_facility(avg_daily_turnover_ghs: float, risk_tier: RiskLabel) -
     if avg_daily_turnover_ghs <= 0:
         return 0.0, 0
     multiplier, duration_hours = _RISK_BAND_FACILITY[risk_tier]
-    rounded = round((avg_daily_turnover_ghs * multiplier) / 50) * 50
+    # Floored at 50, not just rounded: real (positive) turnover recommending
+    # a GHS 0 facility is nonsensical, and round-half-to-even can otherwise
+    # land exactly there for small turnovers.
+    rounded = max(50, round((avg_daily_turnover_ghs * multiplier) / 50) * 50)
     return float(rounded), duration_hours
 
 
@@ -246,15 +251,34 @@ def compute_passport(db: Session, profile: Profile) -> ScoringResult:
     # Repayment reliability is the one explicit override of the exclusion
     # rule (Section 10): always included, defaulting neutral rather than
     # excluded, since every profile needs a first eligibility read.
-    repayment_value = 50.0
-    sub_scores["repayment_reliability"] = repayment_value
+    repayment_events: list[LedgerEntry] = []
     if repayment_tier >= 1:
+        repayment_events = list(
+            db.scalars(
+                select(LedgerEntry).where(
+                    LedgerEntry.profile_id == profile.profile_id,
+                    LedgerEntry.entry_type == LedgerEntryType.repayment,
+                )
+            ).all()
+        )
+
+    if repayment_events:
+        on_time_count = sum(1 for event in repayment_events if event.on_time)
+        repayment_value = (on_time_count / len(repayment_events)) * 100
         reasons.append(
-            "Nodal ledger connected, but repayment-history computation isn't built yet - "
-            "neutral prior still applied pending the ledger/repayment service."
+            f"{on_time_count}/{len(repayment_events)} prior Nodal-financed repayments made on time."
+        )
+    elif repayment_tier >= 1:
+        repayment_value = 50.0
+        reasons.append(
+            "Nodal ledger connected (facility disbursed), but no repayment recorded yet - "
+            "neutral prior still applied."
         )
     else:
+        repayment_value = 50.0
         reasons.append("First-time borrower - neutral prior applied to repayment reliability.")
+
+    sub_scores["repayment_reliability"] = repayment_value
 
     nodal_score = _weighted_composite(sub_scores)
     risk_tier = (
@@ -282,6 +306,7 @@ def compute_passport(db: Session, profile: Profile) -> ScoringResult:
         repayment_reliability_score=round(repayment_value, 2),
         fraud_risk_label=fraud_risk_label,
         nodal_score=round(nodal_score, 2),
+        risk_tier=risk_tier,
         confidence={
             "identity": identity_tier,
             "cash_flow": cash_flow_tier,

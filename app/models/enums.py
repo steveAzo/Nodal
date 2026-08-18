@@ -69,3 +69,25 @@ class RiskLabel(str, enum.Enum):
     low = "low"
     medium = "medium"
     high = "high"
+
+
+class RecommendationType(str, enum.Enum):
+    approve = "approve"
+    decline = "decline"
+    refer = "refer"
+
+
+class LedgerEntryType(str, enum.Enum):
+    disbursement = "disbursement"
+    repayment = "repayment"
+
+
+class SettlementRail(str, enum.Enum):
+    """Domestic is the only rail this build's settlement endpoint can ever
+    choose for an agent-facing disbursement (Section 7's routing rule).
+    Stablecoin exists in this enum because it's a real value elsewhere in the
+    architecture (institutional capital-sourcing, not built here) - not
+    because this endpoint can select it."""
+
+    domestic = "domestic"
+    stablecoin = "stablecoin"

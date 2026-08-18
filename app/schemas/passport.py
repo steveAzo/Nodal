@@ -29,6 +29,7 @@ class PassportOut(BaseModel):
     repayment_reliability_score: float
     fraud_risk: RiskLabel
     nodal_score: float
+    risk_tier: RiskLabel
     confidence_by_category: ConfidenceByCategory
     recommended_liquidity_line_ghs: float
     recommended_duration_hours: int
