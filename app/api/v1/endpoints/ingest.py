@@ -5,11 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.consent import Consent
-from app.models.enums import ConsentStatus, EntryMethod, SourceType
+from app.models.enums import EntryMethod, SourceType
 from app.models.ingestion_event import IngestionEvent
 from app.models.profile import Profile, Source
 from app.schemas.ingestion import IngestEventOut, IngestEventRequest
+from app.services.consent_check import get_active_consent
+from app.services.passport_service import recalculate_passport
 
 router = APIRouter(tags=["ingestion"])
 
@@ -25,18 +26,7 @@ def ingest_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
     now = datetime.now(timezone.utc)
-
-    consent = db.scalar(
-        select(Consent).where(
-            Consent.profile_id == payload.profile_id,
-            Consent.source_type == source_type,
-            Consent.status == ConsentStatus.active,
-        )
-    )
-    if consent is not None and consent.expires_at <= now:
-        consent.status = ConsentStatus.expired
-        db.commit()
-        consent = None
+    consent = get_active_consent(db, payload.profile_id, source_type)
 
     if consent is None:
         raise HTTPException(
@@ -78,9 +68,12 @@ def ingest_event(
         occurred_at=payload.occurred_at,
     )
     db.add(event)
-    # TODO(phase 3): fire POST /v1/score/recalculate — Section 10 lists a new
-    # Tier 3+ transaction as a recalculation trigger; scoring engine doesn't exist yet.
     db.commit()
     db.refresh(event)
+
+    # A new Tier 3+ transaction is a recalculation trigger (Section 10);
+    # Section 12 requires this to land under 5s, so it's fired inline rather
+    # than queued.
+    recalculate_passport(db, profile)
 
     return IngestEventOut.model_validate(event)

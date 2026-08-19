@@ -24,6 +24,7 @@ class SourceType(str, enum.Enum):
     bank = "bank"
     payment_gateway = "payment_gateway"
     nodal_ledger = "nodal_ledger"
+    receipt = "receipt"  # OCR-derived spend evidence for profiles with no digital rails at all
 
 
 class EntryMethod(str, enum.Enum):

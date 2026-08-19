@@ -23,6 +23,13 @@ WINDOW_DAYS = 90
 
 CASH_FLOW_SOURCE_TYPES = {SourceType.momo, SourceType.bank, SourceType.payment_gateway}
 
+# Broader than CASH_FLOW_SOURCE_TYPES: receipt-derived evidence (Phase 6) is
+# real spend activity, so it feeds Business Activity, Consistency, and Fraud
+# the same as a live momo/bank/payment_gateway feed does. It's deliberately
+# NOT in CASH_FLOW_SOURCE_TYPES though - see _liquidity_reliability's gating
+# below for why.
+ACTIVITY_SOURCE_TYPES = CASH_FLOW_SOURCE_TYPES | {SourceType.receipt}
+
 # GHS/day turnover treated as "moderate" (50%) business activity per node
 # type. Tuned by hand, not measured against a real population — a defensible
 # starting point, to be replaced once enough live profiles exist to fit
@@ -131,7 +138,13 @@ def _liquidity_reliability(events: list[IngestionEvent]) -> float:
     explicit 'shortage event' in this schema (that concept belongs to a
     different product surface entirely) — this is a deliberate proxy from
     the transaction stream we do have: a day where outflow exceeds inflow
-    is read as liquidity strain."""
+    is read as liquidity strain.
+
+    Callers must only pass events from CASH_FLOW_SOURCE_TYPES, never
+    receipt-derived ones — a receipt only ever proves an outflow (money paid
+    for a bill), so a receipts-only event list would read as 100% strain
+    every time, which isn't a liquidity signal, it's a blind spot. See the
+    exclusion branch in compute_passport."""
     series = [day for day in _daily_series(events) if day["count"] > 0]
     if not series:
         return 50.0  # unreachable given the caller's gating, kept as a guard
@@ -158,7 +171,7 @@ def _fraud_safety(events: list[IngestionEvent], sources: list[Source]) -> tuple[
     recent_cutoff = _utcnow() - timedelta(days=3)
     new_sources = [
         s for s in sources
-        if s.source_type in CASH_FLOW_SOURCE_TYPES and s.connected_at is not None and s.connected_at >= recent_cutoff
+        if s.source_type in ACTIVITY_SOURCE_TYPES and s.connected_at is not None and s.connected_at >= recent_cutoff
     ]
     if new_sources:
         flags.append(f"{len(new_sources)} newly connected data source(s) within the last 3 days.")
@@ -198,20 +211,24 @@ def _recommended_facility(avg_daily_turnover_ghs: float, risk_tier: RiskLabel) -
 
 def compute_passport(db: Session, profile: Profile) -> ScoringResult:
     sources = list(profile.sources)
-    cash_flow_tier = _max_tier(sources, CASH_FLOW_SOURCE_TYPES)
+    # "cash_flow" in confidence_by_category reflects ANY spend evidence,
+    # including receipts. Liquidity needs a stricter bidirectional subset -
+    # see the source_type_by_id filter further down, where it's gated on
+    # actual events rather than a second tier check.
+    activity_tier = _max_tier(sources, ACTIVITY_SOURCE_TYPES)
     stability_tier = _max_tier(sources, {SourceType.utility})
     repayment_tier = _max_tier(sources, {SourceType.nodal_ledger})
     identity_tier = 3 if profile.identity_verification_status == "api_verified" else 0
     node_type = str(profile.node_type)
 
-    events: list[IngestionEvent] = []
-    if cash_flow_tier >= 1:
-        source_ids = [s.id for s in sources if s.source_type in CASH_FLOW_SOURCE_TYPES]
+    activity_events: list[IngestionEvent] = []
+    if activity_tier >= 1:
+        activity_source_ids = [s.id for s in sources if s.source_type in ACTIVITY_SOURCE_TYPES]
         window_start = _utcnow() - timedelta(days=WINDOW_DAYS)
-        events = list(
+        activity_events = list(
             db.scalars(
                 select(IngestionEvent).where(
-                    IngestionEvent.source_id.in_(source_ids),
+                    IngestionEvent.source_id.in_(activity_source_ids),
                     IngestionEvent.occurred_at >= window_start,
                 )
             ).all()
@@ -222,20 +239,41 @@ def compute_passport(db: Session, profile: Profile) -> ScoringResult:
     excluded: list[str] = []
     sub_scores: dict[str, float | None] = {}
 
-    if cash_flow_tier >= 1 and events:
+    if activity_tier >= 1 and activity_events:
         activity_pct, business_activity_label, transaction_volume_ghs, avg_daily_turnover_ghs = (
-            _business_activity(events, node_type)
+            _business_activity(activity_events, node_type)
         )
         sub_scores["business_activity"] = activity_pct
-        sub_scores["transaction_consistency"] = _transaction_consistency(events)
-        sub_scores["liquidity_reliability"] = _liquidity_reliability(events)
-        fraud_safety_value, fraud_flags = _fraud_safety(events, sources)
+        sub_scores["transaction_consistency"] = _transaction_consistency(activity_events)
+        fraud_safety_value, fraud_flags = _fraud_safety(activity_events, sources)
         sub_scores["fraud_safety"] = fraud_safety_value
         risk_flags.extend(fraud_flags)
         reasons.append(
-            f"{len(events)} transactions over the trailing {WINDOW_DAYS} days "
-            f"(GHS {transaction_volume_ghs:,.2f} volume) from Tier {cash_flow_tier} cash-flow source(s)."
+            f"{len(activity_events)} spend/transaction events over the trailing {WINDOW_DAYS} days "
+            f"(GHS {transaction_volume_ghs:,.2f} volume) from Tier {activity_tier} source(s)."
         )
+
+        # Liquidity needs to see both directions of money to mean anything.
+        # Receipts only ever prove an outflow, so a receipts-only profile
+        # gets this sub-score excluded rather than scored as permanently
+        # cash-negative.
+        source_type_by_id = {s.id: s.source_type for s in sources}
+        bidirectional_events = [
+            e for e in activity_events if source_type_by_id.get(e.source_id) in CASH_FLOW_SOURCE_TYPES
+        ]
+        if bidirectional_events:
+            sub_scores["liquidity_reliability"] = _liquidity_reliability(bidirectional_events)
+            reasons.append(
+                f"Liquidity reliability computed from {len(bidirectional_events)} event(s) with "
+                "visible inflow and outflow."
+            )
+        else:
+            sub_scores["liquidity_reliability"] = None
+            excluded.append("liquidity_reliability")
+            reasons.append(
+                "Only outflow-only receipt evidence on file - liquidity reliability needs to see "
+                "both money in and money out, so it's excluded rather than scored as cash-negative."
+            )
     else:
         business_activity_label = BusinessActivityLabel.weak
         transaction_volume_ghs = 0.0
@@ -244,8 +282,8 @@ def compute_passport(db: Session, profile: Profile) -> ScoringResult:
             sub_scores[key] = None
         excluded.extend(["business_activity", "transaction_consistency", "liquidity_reliability", "fraud_safety"])
         reasons.append(
-            "No Tier 1+ cash-flow source with transaction history - those four sub-scores are "
-            "excluded from the weighted sum (Section 2), not scored as zero."
+            "No Tier 1+ activity source (cash-flow or receipt-derived) with history - those four "
+            "sub-scores are excluded from the weighted sum (Section 2), not scored as zero."
         )
 
     # Repayment reliability is the one explicit override of the exclusion
@@ -309,7 +347,7 @@ def compute_passport(db: Session, profile: Profile) -> ScoringResult:
         risk_tier=risk_tier,
         confidence={
             "identity": identity_tier,
-            "cash_flow": cash_flow_tier,
+            "cash_flow": activity_tier,
             "stability": stability_tier,
             "repayment_history": repayment_tier,
         },
